@@ -77,7 +77,7 @@ func newAddon(name string, replicas *int32) *addoncontroller.Addon {
 		},
 		Spec: addoncontroller.AddonSpec{
 			Versions: []addoncontroller.AddonVersion{
-				addoncontroller.AddonVersion{
+				{
 					Version:   "1.0.0",
 					Changelog: "abc",
 					Visible:   true,

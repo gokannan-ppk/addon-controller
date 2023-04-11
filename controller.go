@@ -306,6 +306,11 @@ func (c *Controller) syncHandler(ctx context.Context, key string) error {
 				// 如果删除失败，则直接返回err，controller需要重新做入队处理
 				return err
 			}
+			// 如果对应删除成功，则在finalizers中删除对应的字段
+			addon.ObjectMeta.Finalizers = removeFinalizer(addon.ObjectMeta.Finalizers, finalizer)
+			if _, err := c.addonclientset.AddoncontrollerV1alpha1().Addons(addon.Namespace).Update(context.TODO(), addon, metav1.UpdateOptions{}); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -376,6 +381,12 @@ func finalizerContains(strs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// todo：删除对应的finalizer
+func removeFinalizer(strs []string, s string) []string {
+	// 具体删除逻辑
+	return strs
 }
 
 // todo：实现删除级联资源的具体逻辑
