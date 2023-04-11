@@ -19,14 +19,14 @@ limitations under the License.
 package fake
 
 import (
+	clientset "github.com/gokannan-ppk/addon-controller/pkg/generated/clientset/versioned"
+	addoncontrollerv1alpha1 "github.com/gokannan-ppk/addon-controller/pkg/generated/clientset/versioned/typed/addoncontroller/v1alpha1"
+	fakeaddoncontrollerv1alpha1 "github.com/gokannan-ppk/addon-controller/pkg/generated/clientset/versioned/typed/addoncontroller/v1alpha1/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/testing"
-	clientset "k8s.io/sample-controller/pkg/generated/clientset/versioned"
-	samplecontrollerv1alpha1 "k8s.io/sample-controller/pkg/generated/clientset/versioned/typed/samplecontroller/v1alpha1"
-	fakesamplecontrollerv1alpha1 "k8s.io/sample-controller/pkg/generated/clientset/versioned/typed/samplecontroller/v1alpha1/fake"
 )
 
 // NewSimpleClientset returns a clientset that will respond with the provided objects.
@@ -79,7 +79,7 @@ var (
 	_ testing.FakeClient  = &Clientset{}
 )
 
-// SamplecontrollerV1alpha1 retrieves the SamplecontrollerV1alpha1Client
-func (c *Clientset) SamplecontrollerV1alpha1() samplecontrollerv1alpha1.SamplecontrollerV1alpha1Interface {
-	return &fakesamplecontrollerv1alpha1.FakeSamplecontrollerV1alpha1{Fake: &c.Fake}
+// AddoncontrollerV1alpha1 retrieves the AddoncontrollerV1alpha1Client
+func (c *Clientset) AddoncontrollerV1alpha1() addoncontrollerv1alpha1.AddoncontrollerV1alpha1Interface {
+	return &fakeaddoncontrollerv1alpha1.FakeAddoncontrollerV1alpha1{Fake: &c.Fake}
 }

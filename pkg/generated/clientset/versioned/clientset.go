@@ -22,26 +22,26 @@ import (
 	"fmt"
 	"net/http"
 
+	addoncontrollerv1alpha1 "github.com/gokannan-ppk/addon-controller/pkg/generated/clientset/versioned/typed/addoncontroller/v1alpha1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
-	samplecontrollerv1alpha1 "k8s.io/sample-controller/pkg/generated/clientset/versioned/typed/samplecontroller/v1alpha1"
 )
 
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
-	SamplecontrollerV1alpha1() samplecontrollerv1alpha1.SamplecontrollerV1alpha1Interface
+	AddoncontrollerV1alpha1() addoncontrollerv1alpha1.AddoncontrollerV1alpha1Interface
 }
 
 // Clientset contains the clients for groups.
 type Clientset struct {
 	*discovery.DiscoveryClient
-	samplecontrollerV1alpha1 *samplecontrollerv1alpha1.SamplecontrollerV1alpha1Client
+	addoncontrollerV1alpha1 *addoncontrollerv1alpha1.AddoncontrollerV1alpha1Client
 }
 
-// SamplecontrollerV1alpha1 retrieves the SamplecontrollerV1alpha1Client
-func (c *Clientset) SamplecontrollerV1alpha1() samplecontrollerv1alpha1.SamplecontrollerV1alpha1Interface {
-	return c.samplecontrollerV1alpha1
+// AddoncontrollerV1alpha1 retrieves the AddoncontrollerV1alpha1Client
+func (c *Clientset) AddoncontrollerV1alpha1() addoncontrollerv1alpha1.AddoncontrollerV1alpha1Interface {
+	return c.addoncontrollerV1alpha1
 }
 
 // Discovery retrieves the DiscoveryClient
@@ -88,7 +88,7 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 
 	var cs Clientset
 	var err error
-	cs.samplecontrollerV1alpha1, err = samplecontrollerv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	cs.addoncontrollerV1alpha1, err = addoncontrollerv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func NewForConfigOrDie(c *rest.Config) *Clientset {
 // New creates a new Clientset for the given RESTClient.
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
-	cs.samplecontrollerV1alpha1 = samplecontrollerv1alpha1.New(c)
+	cs.addoncontrollerV1alpha1 = addoncontrollerv1alpha1.New(c)
 
 	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)
 	return &cs
