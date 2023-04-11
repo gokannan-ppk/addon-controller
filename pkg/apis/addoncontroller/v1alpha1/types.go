@@ -23,6 +23,12 @@ import (
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
+const (
+	FinalizerNameHelmClient = "client.finalizers.addoncontroller.ppk.github.com"
+	FinalizerNameHelmChart  = "chart.finalizers.addoncontroller.ppk.github.com"
+	FinalizerNameCCEInfo    = "info.finalizers.addoncontroller.ppk.github.com"
+)
+
 // Addon is a specification for a Addon resource
 type Addon struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -36,6 +42,7 @@ type Addon struct {
 type AddonSpec struct {
 	Versions    []AddonVersion `json:"versions"`
 	Description string         `json:"description"`
+	Client      ClientSpec     `json:"client"`
 }
 
 // 代表每一个插件在当前region所支持的版本
@@ -43,15 +50,13 @@ type AddonVersion struct {
 	Version   string `json:"version"`
 	Changelog string `json:"changelog"`
 	Visible   bool   `json:"visible"`
-
-	Client ClientSpec `json:"client"`
 }
 
 // 启动一个自研client，该client封装了helm命令行并以API形式进行暴露
 type ClientSpec struct {
-	Name    string `json:"name"`
-	Image   string `json:"image"`
-	Replica int    `json:"replica"`
+	Name     string `json:"name"`
+	Image    string `json:"image"`
+	Replicas *int32 `json:"replicas"`
 }
 
 // AddonStatus is the status for a Addon resource

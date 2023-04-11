@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -77,8 +76,13 @@ func newAddon(name string, replicas *int32) *addoncontroller.Addon {
 			Namespace: metav1.NamespaceDefault,
 		},
 		Spec: addoncontroller.AddonSpec{
-			DeploymentName: fmt.Sprintf("%s-deployment", name),
-			Replicas:       replicas,
+			Versions: []addoncontroller.AddonVersion{
+				addoncontroller.AddonVersion{
+					Version:   "1.0.0",
+					Changelog: "abc",
+					Visible:   true,
+				},
+			},
 		},
 	}
 }
@@ -91,8 +95,10 @@ func (f *fixture) newController(ctx context.Context) (*Controller, informers.Sha
 	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
 	c := NewController(ctx, f.kubeclient, f.client,
-		k8sI.Apps().V1().Deployments(), i.Addoncontroller().V1alpha1().Addons())
-
+		k8sI.Apps().V1().Deployments(),
+		k8sI.Core().V1().Services(),
+		k8sI.Core().V1().ConfigMaps(),
+		i.Addoncontroller().V1alpha1().Addons())
 	c.addonsSynced = alwaysReady
 	c.deploymentsSynced = alwaysReady
 	c.recorder = &record.FakeRecorder{}
@@ -288,7 +294,7 @@ func TestUpdateDeployment(t *testing.T) {
 	d := newDeployment(addon)
 
 	// Update replicas
-	addon.Spec.Replicas = int32Ptr(2)
+	addon.Spec.Client.Replicas = int32Ptr(2)
 	expDeployment := newDeployment(addon)
 
 	f.addonLister = append(f.addonLister, addon)

@@ -2,7 +2,7 @@
 
 module github.com/gokannan-ppk/addon-controller
 
-go 1.20
+go 1.19
 
 require (
 	k8s.io/api v0.0.0-20230327181730-ec59454f24f5

@@ -25,13 +25,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
+	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	appslisters "k8s.io/client-go/listers/apps/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -44,7 +47,7 @@ import (
 	listers "github.com/gokannan-ppk/addon-controller/pkg/generated/listers/addoncontroller/v1alpha1"
 )
 
-const controllerAgentName = "sample-controller"
+const controllerAgentName = "addon-controller"
 
 const (
 	// SuccessSynced is used as part of the Event 'reason' when a Addon is synced
@@ -65,11 +68,14 @@ const (
 type Controller struct {
 	// kubeclientset is a standard kubernetes clientset
 	kubeclientset kubernetes.Interface
-	// sampleclientset is a clientset for our own API group
-	sampleclientset clientset.Interface
+	// addonclientset is a clientset for our own API group
+	addonclientset clientset.Interface
 
 	deploymentsLister appslisters.DeploymentLister
 	deploymentsSynced cache.InformerSynced
+	servicesLister    corelisters.ServiceLister
+	servicesSynced    cache.InformerSynced
+	configmapsLister  corelisters.ConfigMapLister
 	addonsLister      listers.AddonLister
 	addonsSynced      cache.InformerSynced
 
@@ -88,14 +94,16 @@ type Controller struct {
 func NewController(
 	ctx context.Context,
 	kubeclientset kubernetes.Interface,
-	sampleclientset clientset.Interface,
+	addonclientset clientset.Interface,
 	deploymentInformer appsinformers.DeploymentInformer,
+	serviceInformer coreinformers.ServiceInformer,
+	configmapInformer coreinformers.ConfigMapInformer,
 	addonInformer informers.AddonInformer) *Controller {
 	logger := klog.FromContext(ctx)
 
 	// Create event broadcaster
-	// Add sample-controller types to the default Kubernetes Scheme so Events can be
-	// logged for sample-controller types.
+	// Add addon-controller types to the default Kubernetes Scheme so Events can be
+	// logged for addon-controller types.
 	utilruntime.Must(samplescheme.AddToScheme(scheme.Scheme))
 	logger.V(4).Info("Creating event broadcaster")
 
@@ -106,9 +114,12 @@ func NewController(
 
 	controller := &Controller{
 		kubeclientset:     kubeclientset,
-		sampleclientset:   sampleclientset,
+		addonclientset:    addonclientset,
 		deploymentsLister: deploymentInformer.Lister(),
 		deploymentsSynced: deploymentInformer.Informer().HasSynced,
+		servicesLister:    serviceInformer.Lister(),
+		servicesSynced:    serviceInformer.Informer().HasSynced,
+		configmapsLister:  configmapInformer.Lister(),
 		addonsLister:      addonInformer.Lister(),
 		addonsSynced:      addonInformer.Informer().HasSynced,
 		workqueue:         workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Addons"),
@@ -122,21 +133,26 @@ func NewController(
 		UpdateFunc: func(old, new interface{}) {
 			controller.enqueueAddon(new)
 		},
+		DeleteFunc: controller.deleteAddon,
 	})
-	// Set up an event handler for when Deployment resources change. This
-	// handler will lookup the owner of the given Deployment, and if it is
-	// owned by a Addon resource then the handler will enqueue that Addon resource for
-	// processing. This way, we don't need to implement custom logic for
-	// handling Deployment resources. More info on this pattern:
-	// https://github.com/kubernetes/community/blob/8cafef897a22026d42f5e5bb3f104febe7e29830/contributors/devel/controllers.md
 	deploymentInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.handleObject,
 		UpdateFunc: func(old, new interface{}) {
 			newDepl := new.(*appsv1.Deployment)
 			oldDepl := old.(*appsv1.Deployment)
 			if newDepl.ResourceVersion == oldDepl.ResourceVersion {
-				// Periodic resync will send update events for all known Deployments.
-				// Two different versions of the same Deployment will always have different RVs.
+				return
+			}
+			controller.handleObject(new)
+		},
+		DeleteFunc: controller.handleObject,
+	})
+	serviceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: controller.handleObject,
+		UpdateFunc: func(old, new interface{}) {
+			newDepl := new.(*corev1.Service)
+			oldDepl := old.(*corev1.Service)
+			if newDepl.ResourceVersion == oldDepl.ResourceVersion {
 				return
 			}
 			controller.handleObject(new)
@@ -162,7 +178,8 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	// Wait for the caches to be synced before starting workers
 	logger.Info("Waiting for informer caches to sync")
 
-	if ok := cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.addonsSynced); !ok {
+	// configmap的增删改不需要感知，默认环境中就是有相应的环境配置的，使用时直接查就行
+	if ok := cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.servicesSynced, c.addonsSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
@@ -259,90 +276,120 @@ func (c *Controller) syncHandler(ctx context.Context, key string) error {
 	// Get the Addon resource with this namespace/name
 	addon, err := c.addonsLister.Addons(namespace).Get(name)
 	if err != nil {
-		// The Addon resource may no longer exist, in which case we stop
-		// processing.
 		if errors.IsNotFound(err) {
 			utilruntime.HandleError(fmt.Errorf("addon '%s' in work queue no longer exists", key))
 			return nil
 		}
-
 		return err
 	}
 
-	deploymentName := addon.Spec.DeploymentName
-	if deploymentName == "" {
-		// We choose to absorb the error here as the worker would requeue the
-		// resource otherwise. Instead, the next time the resource is updated
-		// the resource will be queued again.
+	// 检查DeletionTimestamp字段是否为0来判断资源是否被删除
+	if addon.ObjectMeta.DeletionTimestamp.IsZero() {
+		// 如果Addon对象未被删除，则检测finalizer是否存在，若不存在，则添加更新到Addon资源对象中
+		if !finalizerContains(addon.ObjectMeta.Finalizers, samplev1alpha1.FinalizerNameHelmClient) {
+			addon.ObjectMeta.Finalizers = append(addon.ObjectMeta.Finalizers, samplev1alpha1.FinalizerNameHelmClient)
+		}
+		if !finalizerContains(addon.ObjectMeta.Finalizers, samplev1alpha1.FinalizerNameHelmChart) {
+			addon.ObjectMeta.Finalizers = append(addon.ObjectMeta.Finalizers, samplev1alpha1.FinalizerNameHelmChart)
+		}
+		if !finalizerContains(addon.ObjectMeta.Finalizers, samplev1alpha1.FinalizerNameCCEInfo) {
+			addon.ObjectMeta.Finalizers = append(addon.ObjectMeta.Finalizers, samplev1alpha1.FinalizerNameCCEInfo)
+		}
+		if _, err := c.addonclientset.AddoncontrollerV1alpha1().Addons(addon.Namespace).Update(context.TODO(), addon, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	} else {
+		// 如果Addon对象处于删除中，则要遍历finalizers，然后针对每一种级联资源进行删除操作
+		for _, finalizer := range addon.ObjectMeta.Finalizers {
+			// todo：实现3种级联资源的pre delete hook逻辑，注意要先删除CCE中的注册信息
+			if err := c.deleteExternalResources(addon); err != nil {
+				// 如果删除失败，则直接返回err，controller需要重新做入队处理
+				return err
+			}
+		}
+		return nil
+	}
+
+	// 依次处理3种级联资源：1）自定义helm客户端，供controller调用接口上传helm chart；2）helm chart；3）CCE中的注册信息。
+	// 1）自定义helm客户端，使用deployment创建，同时创建service
+	// 从clientSpec定义中获取deployment name
+	clientName := addon.Spec.Client.Name
+	if clientName == "" {
 		utilruntime.HandleError(fmt.Errorf("%s: deployment name must be specified", key))
 		return nil
 	}
 
-	// Get the deployment with the name specified in Addon.spec
-	deployment, err := c.deploymentsLister.Deployments(addon.Namespace).Get(deploymentName)
-	// If the resource doesn't exist, we'll create it
+	deployment, err := c.deploymentsLister.Deployments(addon.Namespace).Get(clientName)
 	if errors.IsNotFound(err) {
 		deployment, err = c.kubeclientset.AppsV1().Deployments(addon.Namespace).Create(context.TODO(), newDeployment(addon), metav1.CreateOptions{})
 	}
-
-	// If an error occurs during Get/Create, we'll requeue the item so we can
-	// attempt processing again later. This could have been caused by a
-	// temporary network failure, or any other transient reason.
 	if err != nil {
 		return err
 	}
-
-	// If the Deployment is not controlled by this Addon resource, we should log
-	// a warning to the event recorder and return error msg.
 	if !metav1.IsControlledBy(deployment, addon) {
 		msg := fmt.Sprintf(MessageResourceExists, deployment.Name)
 		c.recorder.Event(addon, corev1.EventTypeWarning, ErrResourceExists, msg)
 		return fmt.Errorf("%s", msg)
 	}
-
-	// If this number of the replicas on the Addon resource is specified, and the
-	// number does not equal the current desired replicas on the Deployment, we
-	// should update the Deployment resource.
-	if addon.Spec.Replicas != nil && *addon.Spec.Replicas != *deployment.Spec.Replicas {
-		logger.V(4).Info("Update deployment resource", "currentReplicas", *addon.Spec.Replicas, "desiredReplicas", *deployment.Spec.Replicas)
+	if addon.Spec.Client.Replicas != nil && *addon.Spec.Client.Replicas != *deployment.Spec.Replicas {
+		logger.V(4).Info("Update deployment resource", "currentReplicas", *addon.Spec.Client.Replicas, "desiredReplicas", *deployment.Spec.Replicas)
 		deployment, err = c.kubeclientset.AppsV1().Deployments(addon.Namespace).Update(context.TODO(), newDeployment(addon), metav1.UpdateOptions{})
 	}
-
-	// If an error occurs during Update, we'll requeue the item so we can
-	// attempt processing again later. This could have been caused by a
-	// temporary network failure, or any other transient reason.
 	if err != nil {
 		return err
 	}
 
-	// Finally, we update the status block of the Addon resource to reflect the
-	// current state of the world
+	// 获取service，如果没有则创建
+	service, err := c.servicesLister.Services(addon.Namespace).Get(clientName)
+	if errors.IsNotFound(err) {
+		service, err = c.kubeclientset.CoreV1().Services(addon.Namespace).Create(context.TODO(), newService(addon), metav1.CreateOptions{})
+	}
+	if err != nil {
+		return err
+	}
+	if !metav1.IsControlledBy(service, addon) {
+		msg := fmt.Sprintf(MessageResourceExists, service.Name)
+		c.recorder.Event(addon, corev1.EventTypeWarning, ErrResourceExists, msg)
+		return fmt.Errorf("%s", msg)
+	}
+
+	// 2）helm chart上传
+	// todo：从环境（controller所在k8s集群）中获取环境配置，包含helm仓库地址、镜像仓库地址、cce服务地址等
+	// todo：通过上面用deployment创建的客户端调用helm chart上传接口上传chart
+
+	// 3）注册Addon版本信息到CCE服务
+	// todo：通过从配置中获取到的CCE服务信息，调Addon版本注册接口，一旦注册成功，用户就能看到并使用相应的插件版本
+
+	// 更新Addon状态并记录事件
 	err = c.updateAddonStatus(addon, deployment)
 	if err != nil {
 		return err
 	}
-
 	c.recorder.Event(addon, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
 	return nil
 }
 
-func (c *Controller) updateAddonStatus(addon *samplev1alpha1.Addon, deployment *appsv1.Deployment) error {
-	// NEVER modify objects from the store. It's a read-only, local cache.
-	// You can use DeepCopy() to make a deep copy of original object and modify this copy
-	// Or create a copy manually for better performance
-	addonCopy := addon.DeepCopy()
-	addonCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
-	// If the CustomResourceSubresources feature gate is not enabled,
-	// we must use Update instead of UpdateStatus to update the Status block of the Addon resource.
-	// UpdateStatus will not allow changes to the Spec of the resource,
-	// which is ideal for ensuring nothing other than resource status has been updated.
-	_, err := c.sampleclientset.AddoncontrollerV1alpha1().Addons(addon.Namespace).UpdateStatus(context.TODO(), addonCopy, metav1.UpdateOptions{})
-	return err
+func finalizerContains(strs []string, s string) bool {
+	for _, str := range strs {
+		if str == s {
+			return true
+		}
+	}
+	return false
 }
 
-// enqueueAddon takes a Addon resource and converts it into a namespace/name
-// string which is then put onto the work queue. This method should *not* be
-// passed resources of any type other than Addon.
+// todo：实现删除级联资源的具体逻辑
+func (c *Controller) deleteExternalResources(addon *samplev1alpha1.Addon) error {
+	// 删除Addon关联的外部资源逻辑
+	// 确保实现是幂等的
+	return nil
+}
+
+func (c *Controller) updateAddonStatus(addon *samplev1alpha1.Addon, deployment *appsv1.Deployment) error {
+	// todo：需要定义addon的status后再补充相关逻辑
+	return nil
+}
+
 func (c *Controller) enqueueAddon(obj interface{}) {
 	var key string
 	var err error
@@ -353,11 +400,11 @@ func (c *Controller) enqueueAddon(obj interface{}) {
 	c.workqueue.Add(key)
 }
 
-// handleObject will take any resource implementing metav1.Object and attempt
-// to find the Addon resource that 'owns' it. It does this by looking at the
-// objects metadata.ownerReferences field for an appropriate OwnerReference.
-// It then enqueues that Addon resource to be processed. If the object does not
-// have an appropriate OwnerReference, it will simply be skipped.
+// Addon资源删除的响应方法，待实现
+func (c *Controller) deleteAddon(obj interface{}) {
+	//todo：具体实现逻辑
+}
+
 func (c *Controller) handleObject(obj interface{}) {
 	var object metav1.Object
 	var ok bool
@@ -394,24 +441,21 @@ func (c *Controller) handleObject(obj interface{}) {
 	}
 }
 
-// newDeployment creates a new Deployment for a Addon resource. It also sets
-// the appropriate OwnerReferences on the resource so handleObject can discover
-// the Addon resource that 'owns' it.
 func newDeployment(addon *samplev1alpha1.Addon) *appsv1.Deployment {
 	labels := map[string]string{
-		"app":        "nginx",
+		"app":        "repo-client",
 		"controller": addon.Name,
 	}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      addon.Spec.DeploymentName,
+			Name:      addon.Spec.Client.Name,
 			Namespace: addon.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(addon, samplev1alpha1.SchemeGroupVersion.WithKind("Addon")),
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: addon.Spec.Replicas,
+			Replicas: addon.Spec.Client.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -422,10 +466,37 @@ func newDeployment(addon *samplev1alpha1.Addon) *appsv1.Deployment {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  "nginx",
-							Image: "nginx:latest",
+							Name:  addon.Spec.Client.Name,
+							Image: addon.Spec.Client.Image,
 						},
 					},
+				},
+			},
+		},
+	}
+}
+
+// 注意添加OwnerReferences
+func newService(addon *samplev1alpha1.Addon) *corev1.Service {
+	labels := map[string]string{
+		"app":        "repo-client",
+		"controller": addon.Name,
+	}
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      addon.Spec.Client.Name,
+			Namespace: addon.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(addon, samplev1alpha1.SchemeGroupVersion.WithKind("Addon")),
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: labels,
+			Ports: []corev1.ServicePort{
+				{
+					Protocol:   corev1.ProtocolTCP,
+					Port:       80,
+					TargetPort: intstr.IntOrString{IntVal: 80},
 				},
 			},
 		},

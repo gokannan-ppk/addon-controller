@@ -69,6 +69,8 @@ func main() {
 
 	controller := NewController(ctx, kubeClient, addonClient,
 		kubeInformerFactory.Apps().V1().Deployments(),
+		kubeInformerFactory.Core().V1().Services(),
+		kubeInformerFactory.Core().V1().ConfigMaps(),
 		addonInformerFactory.Addoncontroller().V1alpha1().Addons())
 
 	// notice that there is no need to run Start methods in a separate goroutine. (i.e. go kubeInformerFactory.Start(ctx.done())
